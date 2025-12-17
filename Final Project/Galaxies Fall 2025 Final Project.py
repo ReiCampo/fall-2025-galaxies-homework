@@ -34,8 +34,8 @@ dpr_summary_file = os.path.join(data_directory, "drpall-v3_1_1.fits")
 drpall = fits.open(dpr_summary_file)[1].data
 
 # Finding the galaxies that sit in the redshift range I'm interested in
-# Choosing this redshift range from Kai-Xing Liu et al. (2018):
-# lowz_mask = drpall["NSA_Z"] < 0.35
+# Choosing this redshift range since this is a typical redshift range for MaNGA:
+# lowz_mask = drpall["NSA_Z"] < 0.15
 # lowz_gals = drpall[lowz_mask]
 
 # good_quality = (lowz_gals['MANGA_DAPQUAL'] == 0) if 'MANGA_DAPQUAL' in drpall.dtype.names else np.ones(len(lowz_gals), dtype=bool)
@@ -44,7 +44,7 @@ drpall = fits.open(dpr_summary_file)[1].data
 
 # # Randomly select 100 galaxies
 # np.random.seed(50)  # For reproducibility
-# random_indices = np.random.choice(len(quality_sample), size=min(300, len(quality_sample)), replace=False)
+# random_indices = np.random.choice(len(quality_sample), size=min(500, len(quality_sample)), replace=False)
 # final_sample = quality_sample["PLATEIFU"][random_indices]
 
 # for i in final_sample:
@@ -52,8 +52,6 @@ drpall = fits.open(dpr_summary_file)[1].data
 #     url = f"rsync://dtn.sdss.org/dr17/manga/spectro/analysis/v3_1_1/3.1.0/HYB10-MILESHC-MASTARHC2/{plate}/{ifu}/manga-{plate}-{ifu}-MAPS-HYB10-MILESHC-MASTARHC2.fits.gz"
 #     subprocess.run(["rsync", "-avz", url, data_directory])
 
-# test_spectra = fits.open(data_directory + "/manga-7992-9102-MAPS-HYB10-MILESHC-MASTARHC2.fits.gz")
-# test_spectra.info()
 
 ###########################################################################
 ###########################################################################
@@ -146,7 +144,7 @@ def dust_extinction(h_alpha, h_beta, RA, DEC):
                      invalid = "ignore"):
         observed_ratio = galactic_alpha_flux / galactic_beta_flux
         
-        # Balmer intrinsic ration = 2.86
+        # Balmer intrinsic ratio = 2.86
         internal_flux = (2.5 / (k_h_alpha - k_h_beta)) * np.log10(observed_ratio / 2.86)
     
     # This will handle the case when the extinction is negative:
@@ -350,7 +348,7 @@ def classify_bpt(log_nii_ha, log_oiii_hb):
     if log_nii_ha < 0.05:
         kauff_y = 0.61 / (log_nii_ha - 0.05) + 1.3
     else:
-        kauff_y = -np.inf  
+        kauff_y = np.inf 
     
     ##---------------------------------------------------------------
     ##                    Handling Kewley Line:                     -
@@ -360,7 +358,7 @@ def classify_bpt(log_nii_ha, log_oiii_hb):
     if log_nii_ha < 0.47:
         kewley_y = 0.61 / (log_nii_ha - 0.47) + 1.19
     else:
-        kewley_y = -np.inf
+        kewley_y = np.inf
     
     
     ##----------------------------------------------------------------
@@ -712,11 +710,12 @@ ax1.plot(comp_bins, comp_median,
          label=f'Composite (n={composite_data["plateifu"].nunique()} galaxies)',
          color='orange', alpha=0.8)
 
-# Add shaded region for standard deviation
+# Add shaded region for standard mean error
 ax1.fill_between(comp_bins, 
                   comp_median - comp_std/np.sqrt(comp_n), 
                   comp_median + comp_std/np.sqrt(comp_n),
-                  alpha=0.3, color='orange')
+                  alpha=0.3, color='orange',
+                  label = "Standard Mean Error")
 
 # Plot star-forming galaxies
 ax1.plot(sf_bins, sf_median,
@@ -728,11 +727,11 @@ ax1.plot(sf_bins, sf_median,
 ax1.fill_between(sf_bins,
                   sf_median - sf_std/np.sqrt(sf_n),
                   sf_median + sf_std/np.sqrt(sf_n),
-                  alpha=0.3, color='blue')
+                  alpha=0.3, color='blue', label = "Standard Mean Error")
 
-ax1.set_ylabel('SFR Surface Density', fontsize=14)
-ax1.set_title('Radial SFR Surface Density Profiles', fontsize=16, fontweight='bold')
-ax1.legend(fontsize=12, loc='best')
+ax1.set_ylabel('SFR Surface Density [M☉ yr⁻¹ kpc⁻²]', fontsize=14)
+ax1.set_title('Median Radial SFR Surface Density Profiles', fontsize=16, fontweight='bold')
+ax1.legend(fontsize=12, loc='upper right')
 ax1.grid(True, alpha=0.3, linestyle='--')
 ax1.set_yscale('log')  # Log scale often better for SFR surface density
 
@@ -779,20 +778,21 @@ ax1.plot(comp_bins_norm, comp_median_norm, marker='o', linewidth=2, markersize=8
 ax1.fill_between(comp_bins_norm, 
                   comp_median_norm - comp_std_norm/np.sqrt(comp_n_norm), 
                   comp_median_norm + comp_std_norm/np.sqrt(comp_n_norm),
-                  alpha=0.3, color='orange')
+                  alpha=0.3, color='orange', label = "Standard Mean Error")
 
 ax1.plot(sf_bins_norm, sf_median_norm, marker='s', linewidth=2, markersize=8,
          label=f'Star-forming (n={sf_data["plateifu"].nunique()} galaxies)',
          color='blue', alpha=0.8)
+
 ax1.fill_between(sf_bins_norm,
                   sf_median_norm - sf_std_norm/np.sqrt(sf_n_norm),
                   sf_median_norm + sf_std_norm/np.sqrt(sf_n_norm),
-                  alpha=0.3, color='blue')
+                  alpha=0.3, color='blue', label = "Standard Mean Error")
 
-ax1.set_ylabel('SFR Surface Density', fontsize=14)
-ax1.set_title('Radial SFR Surface Density Profiles (Normalized Radius)', 
+ax1.set_ylabel('SFR Surface Density [M☉ yr⁻¹ kpc⁻²]', fontsize=14)
+ax1.set_title('Median Radial SFR Surface Density Profiles (Normalized Radius)', 
               fontsize=16, fontweight='bold')
-ax1.legend(fontsize=12, loc='best')
+ax1.legend(fontsize=12, loc='upper right')
 ax1.grid(True, alpha=0.3, linestyle='--')
 ax1.set_yscale('log')
 
@@ -884,10 +884,10 @@ ax.hist(np.log10(sf_total_sfr), bins=15, alpha=0.6,
 # Add median lines
 ax.axvline(np.log10(comp_total_sfr.median()), 
            color='orange', linestyle='--', linewidth=2,
-           label=f'Comp Median: {comp_total_sfr.median():.2f} M☉/yr')
+           label=f'Comp Median: {np.log10(comp_total_sfr.median()):.2f} M☉/yr')
 ax.axvline(np.log10(sf_total_sfr.median()),
            color='blue', linestyle='--', linewidth=2,
-           label=f'SF Median: {sf_total_sfr.median():.2f} M☉/yr')
+           label=f'SF Median: {np.log10(sf_total_sfr.median()):.2f} M☉/yr')
 
 ax.set_xlabel('log(Total SFR) [Change in Mass / Year]', fontsize=14)
 ax.set_ylabel('Number of Galaxies', fontsize=14)
@@ -896,19 +896,8 @@ ax.legend(fontsize=11)
 ax.grid(True, alpha=0.3, axis='y')
 
 plt.tight_layout()
-plt.savefig('total_sfr_distribution.png', dpi=300, bbox_inches='tight')
+plt.savefig('log_total_sfr_distribution.png', dpi=300, bbox_inches='tight')
 plt.show()
-
-# Statistical test
-from scipy.stats import mannwhitneyu
-stat, pval = mannwhitneyu(comp_total_sfr, sf_total_sfr)
-print(f"\nMann-Whitney U test:")
-print(f"  p-value: {pval:.4f}")
-if pval < 0.05:
-    print(f"  → Distributions are significantly different!")
-else:
-    print(f"  → No significant difference")
-
 
 
 ##---------------------------------------------------------------
@@ -948,16 +937,6 @@ ax.grid(True, alpha=0.3)
 plt.tight_layout()
 plt.savefig('sfr_vs_size.png', dpi=300, bbox_inches='tight')
 plt.show()
-
-
-
-
-
-
-
-
-
-
 
 
 ##---------------------------------------------------------------
