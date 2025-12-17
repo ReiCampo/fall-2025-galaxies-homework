@@ -35,23 +35,25 @@ drpall = fits.open(dpr_summary_file)[1].data
 
 # Finding the galaxies that sit in the redshift range I'm interested in
 # Choosing this redshift range from Kai-Xing Liu et al. (2018):
-lowz_mask = drpall["NSA_Z"] < 0.35
-lowz_gals = drpall[lowz_mask]
+# lowz_mask = drpall["NSA_Z"] < 0.35
+# lowz_gals = drpall[lowz_mask]
 
-good_quality = (lowz_gals['MANGA_DAPQUAL'] == 0) if 'MANGA_DAPQUAL' in drpall.dtype.names else np.ones(len(lowz_gals), dtype=bool)
+# good_quality = (lowz_gals['MANGA_DAPQUAL'] == 0) if 'MANGA_DAPQUAL' in drpall.dtype.names else np.ones(len(lowz_gals), dtype=bool)
 
-quality_sample = lowz_gals[good_quality]
+# quality_sample = lowz_gals[good_quality]
 
-# Randomly select 100 galaxies
-np.random.seed(50)  # For reproducibility
-random_indices = np.random.choice(len(quality_sample), size=min(300, len(quality_sample)), replace=False)
-final_sample = quality_sample["PLATEIFU"][random_indices]
+# # Randomly select 100 galaxies
+# np.random.seed(50)  # For reproducibility
+# random_indices = np.random.choice(len(quality_sample), size=min(300, len(quality_sample)), replace=False)
+# final_sample = quality_sample["PLATEIFU"][random_indices]
 
 # for i in final_sample:
 #     plate, ifu = i.split("-")
 #     url = f"rsync://dtn.sdss.org/dr17/manga/spectro/analysis/v3_1_1/3.1.0/HYB10-MILESHC-MASTARHC2/{plate}/{ifu}/manga-{plate}-{ifu}-MAPS-HYB10-MILESHC-MASTARHC2.fits.gz"
 #     subprocess.run(["rsync", "-avz", url, data_directory])
 
+# test_spectra = fits.open(data_directory + "/manga-7992-9102-MAPS-HYB10-MILESHC-MASTARHC2.fits.gz")
+# test_spectra.info()
 
 ###########################################################################
 ###########################################################################
@@ -182,18 +184,44 @@ for file in fits_files:
         # Get redshift from DRPall
         redshift = redshift_lookup[plateifu]  
         
-        # Selecting needed columns for analysis
+        # Selecting fluxes needed for calculation:
         halpha = spectra["EMLINE_GFLUX"].data[18]
         hbeta = spectra["EMLINE_GFLUX"].data[11]
         nii = spectra["EMLINE_GFLUX"].data[19]
         oiii = spectra["EMLINE_GFLUX"].data[13]
+        
+        halpha_ivar = spectra["EMLINE_GFLUX_IVAR"].data[18]
+        hbeta_ivar = spectra["EMLINE_GFLUX_IVAR"].data[11]
+        nii_ivar = spectra["EMLINE_GFLUX_IVAR"].data[19]
+        oiii_ivar = spectra["EMLINE_GFLUX_IVAR"].data[13]
+        
+        # Calculate S/N for each line
+        with np.errstate(divide='ignore', invalid='ignore'):
+            halpha_snr = halpha * np.sqrt(halpha_ivar)
+            hbeta_snr = hbeta * np.sqrt(hbeta_ivar)
+            nii_snr = nii * np.sqrt(nii_ivar)
+            oiii_snr = oiii * np.sqrt(oiii_ivar)
+                       
         ra = spectra[0].header["OBJRA"]
         dec = spectra[0].header["OBJDEC"]
         x = spectra["SPX_SKYCOO"].data[0]
         y = spectra["SPX_SKYCOO"].data[1]
+ 
+        # I am also going to create a mask that filters signal_to_noise ratios 
+        # greater than 5 and filters out any bad spaxels that have negative flux
+        # values:
         
-        # Going to filter out any bad spaxels since I only want positive fluxes:
-        valid_mask = (halpha > 0) & (hbeta > 0) & (nii > 0) & (oiii > 0)
+        snr_threshold = 2.0
+        
+        valid_mask = (
+            (halpha > 0) & (hbeta > 0) & (nii > 0) & (oiii > 0) &  # Positive fluxes
+            (halpha_snr > snr_threshold) &  # Good S/N
+            (hbeta_snr > snr_threshold) &
+            (nii_snr > snr_threshold) &
+            (oiii_snr > snr_threshold) &
+            (halpha_ivar > 0) & (hbeta_ivar > 0) &  # Valid inverse variances
+            (nii_ivar > 0) & (oiii_ivar > 0)            
+        )
         
         # Because I am getting division by zero, I'm going to add in this line
         # to handle those problems. I will create an array filled with NaNs, 
@@ -223,6 +251,10 @@ for file in fits_files:
             "hbeta_flux": hbeta.flatten().astype(float),
             "nii_flux": nii.flatten().astype(float),
             "oiii_flux": oiii.flatten().astype(float),
+            "halpha_snr": halpha_snr.flatten().astype(float), 
+            "hbeta_snr": hbeta_snr.flatten().astype(float), 
+            "nii_snr": nii_snr.flatten().astype(float),       
+            "oiii_snr": oiii_snr.flatten().astype(float),    
             "log_nii_halpha": log_nii_halpha.flatten().astype(float),
             "log_oiii_hbeta": log_oiii_hbeta.flatten().astype(float),
             "full_dereddened_flux" : dereddened_flux_vals.flatten().astype(float)})
@@ -239,13 +271,13 @@ for file in fits_files:
         df = df[(df['halpha_flux'] > 0) & 
                 (df['hbeta_flux'] > 0) & 
                 (df['nii_flux'] > 0) & 
-                (df['oiii_flux'] > 0)]
+                (df['oiii_flux'] > 0) &
+                (df['halpha_snr'] > snr_threshold) & 
+                (df['hbeta_snr'] > snr_threshold) & 
+                (df['nii_snr'] > snr_threshold) &  
+                (df['oiii_snr'] > snr_threshold)]
         
         df = df.replace([np.inf, -np.inf], np.nan)
-        
-        print(f"\nAfter inf replacement - NaN counts:\n{df.isna().sum()}")
-        
-        
         df = df.dropna(subset=['halpha_flux', 'hbeta_flux', 'nii_flux', 'oiii_flux'])
         
         print(f"After dropna - shape: {df.shape}")
@@ -255,6 +287,8 @@ for file in fits_files:
         clean_fits.append(df)
 
 clean_data = pd.concat(clean_fits, ignore_index = True)
+
+
 print(f"Total valid spaxels: {len(clean_data)}")
 print(f"Sample of data:\n{clean_data.head()}")
 print(f"\nColumns in dataframe:")
@@ -311,36 +345,35 @@ def classify_bpt(log_nii_ha, log_oiii_hb):
     ##----------------------------------------------------------------
     ##                    Handling Kauffmann Line:                   -
     ##----------------------------------------------------------------
-
-    def kauffmann_line(x):
-        return 0.61 / (x - 0.05) + 1.3
+    
+    # Valid for log([NII]/Hα) < 0.05
+    if log_nii_ha < 0.05:
+        kauff_y = 0.61 / (log_nii_ha - 0.05) + 1.3
+    else:
+        kauff_y = -np.inf  
     
     ##---------------------------------------------------------------
     ##                    Handling Kewley Line:                     -
     ##---------------------------------------------------------------
 
-    def kewley_line(x):
-        return 0.61 / (x - 0.47) + 1.19
+    # This determines if the galaxy is Composite or AGN:
+    if log_nii_ha < 0.47:
+        kewley_y = 0.61 / (log_nii_ha - 0.47) + 1.19
+    else:
+        kewley_y = -np.inf
     
     
     ##----------------------------------------------------------------
     ##                  Now Classifying Each Spaxel:                 -
     ##----------------------------------------------------------------
 
-    if log_nii_ha < 0.05:
-        if log_oiii_hb < kauffmann_line(log_nii_ha):
-            return 0
-        else:
-            return 1
+    if log_oiii_hb < kauff_y:
+        return 0  # Star-forming
+    elif log_oiii_hb < kewley_y:
+        return 1  # Composite
     else:
-        if log_oiii_hb < kauffmann_line(log_nii_ha):
-            return 0
-        elif log_oiii_hb < kewley_line(log_nii_ha):
-            return 1
-        else:
-            return 2
-    
-    return -1
+        return 2  # AGN  
+        
 
 # Now I will create a function that will classify if the galaxy is an active AGN
 # or a non-active AGN with the nuclear spectra
@@ -350,7 +383,7 @@ def classify_if_agn(galaxy_df, agn_radius_kpc):
     This function will classify if a galaxy has an active AGN at the center of
     it. This function will use the physical distance of the nucleus of the
     galaxy. This is to take into account for redshift, making the overall
-    calculation more robuts.
+    calculation more robust.
     
     Inputs:
         galaxy_df (Pandas dataframe):
@@ -432,6 +465,66 @@ def calculate_sfr(halpha_flux_dereddened, redshift):
     SFR = 7.9e-42 * halpha_luminosity
     return SFR
 
+# Now I will create a function that calculates SFR densities. This will be used
+# to look at how the density changes over radius:
+
+def sfr_density(sfr, z, spaxel_size_arcsec = 0.5):
+    """
+    This function calculates the star formation rate surface density at each
+    spaxel. The size of each spaxel in MaNGA is 0.5 x 0.5 arcseconds.
+    
+    Inputs:
+        sfr (float):
+            The star formation rate at a given spaxel.
+            
+        z (float):
+            The redshift value of the spaxel.
+            
+        spaxel_size_arcsec (float):
+            The length of each spaxel. Hardcoded to 0.5
+            
+    Outputs:
+        sfr / spaxel_area_kpc2 (float):
+            The star formation rate per spaxel area.
+    """
+    kpc_per_arcsec = cosmo.kpc_proper_per_arcmin(z).to(u.kpc/u.arcsec).value
+    spaxel_size_kpc = spaxel_size_arcsec * kpc_per_arcsec
+    spaxel_area_kpc2 = spaxel_size_kpc**2
+    return sfr / spaxel_area_kpc2
+
+# To account for the fact that we have varying radii between each galaxy, I am
+# going to create a function that calculates the effective radius. This will be
+# used later for plotting:
+
+def normalize_radii(data):
+    """
+    This function normalizes by the radius of each galaxy's maximum detected 
+    radius.
+    
+    Inputs:
+        data (PandasData Frame):
+            Takes in the data frame that will be used to calculate the
+            effective radius. 
+            
+    Outpus:
+        A pandas dataframe with an additional column that calculated the 
+        normalized radius.
+    """
+    normalized_data = []
+    
+    for plateifu in data['plateifu'].unique():
+        galaxy_data = data[data['plateifu'] == plateifu].copy()
+        
+        # Get maximum radius for this galaxy
+        r_max = galaxy_data['r_kpc'].max()
+        
+        # Normalize: r_norm = r / r_max
+        galaxy_data['r_normalized'] = galaxy_data['r_kpc'] / r_max
+        
+        normalized_data.append(galaxy_data)
+    
+    return pd.concat(normalized_data, ignore_index=True)
+
 
 ##----------------------------------------------------------------
 ##                    Adding BPT Calculations:                   -
@@ -455,9 +548,21 @@ clean_data["SFR"] = clean_data.apply(
 )
 
 
+##----------------------------------------------------------------
+##                Adding in SFR Surface Density:                 -
+##----------------------------------------------------------------
+
+
+clean_data["sigma_SFR"] = clean_data.apply(
+    lambda row: sfr_density(row["SFR"], row["redshift"]),
+    axis = 1
+)
+
+
 ##---------------------------------------------------------------
 ##                Calculating Radial Distances:                 -
 ##---------------------------------------------------------------
+
 
 clean_data["r_arcsec"] = np.sqrt(clean_data["x"]**2 + clean_data["y"]**2)
 
@@ -468,6 +573,7 @@ def arcseconds_to_kpc(r_arcsec, redshift):
 clean_data["r_kpc"] = clean_data.apply(
     lambda row: arcseconds_to_kpc(row["r_arcsec"], row["redshift"]),
     axis = 1)
+
 
 ##---------------------------------------------------------------
 ##                Adding Galaxy Classification:                 -
@@ -485,6 +591,18 @@ for plateifu in clean_data["plateifu"].unique():
     
 clean_data["galaxy_classification"] = clean_data["plateifu"].map(galaxy_classifications)
 
+##---------------------------------------------------------------
+##                  Adding in Normalized Radii:                 -
+##---------------------------------------------------------------
+
+
+clean_data = normalize_radii(clean_data)
+
+
+##----------------------------------------------------------------
+##                  Printing Summary Statistics:                 -
+##----------------------------------------------------------------
+
 print(f"\nFinal dataframe with all classifications:")
 print(clean_data.head(10))
 print(f"\nColumns in dataframe:")
@@ -492,23 +610,7 @@ print(clean_data.columns.tolist())
 
 print(f"Unique galaxies: {clean_data['plateifu'].nunique()}")
 print(f"Unique plateifu values: {clean_data['plateifu'].unique()}")
-print(f"Missing redshift: {clean_data['redshift'].isna().sum()}")
 
-
-
-
-
-print("="*60)
-print("DEBUGGING GALAXY CLASSIFICATION")
-print("="*60)
-
-# 1. Check overall BPT distribution
-print("\n1. Overall BPT classification:")
-print(clean_data['bpt_classification'].value_counts())
-
-# 2. Check if ANY AGN spaxels exist
-n_agn = (clean_data['bpt_classification'] == 2).sum()
-print(f"\n2. Total AGN spaxels: {n_agn}")
 
 ###########################################################################
 ###########################################################################
@@ -517,6 +619,345 @@ print(f"\n2. Total AGN spaxels: {n_agn}")
 ###                                                                     ###
 ###########################################################################
 ###########################################################################
+
+# Make sure to put in a note about creating plotting functions!!!
+def bin_by_radius(data, radial_bins, radius_type = "r_kpc"):
+    """
+    This function bins each spaxel by radius and then calculates the mean and
+    median star formation rate surface density in each radial bin. Can take in 
+    either physical or normalized radii.
+    
+    Inputs:
+        data (PandasDataframe):
+            The data frame that contains star formation rates to be passed to
+            the function.
+            
+        radial_bins (NumpyArray):
+            A range of radial bins that will be used to calculate bin centers.
+            
+        radius_type (str):
+            The name of the column that holds which radius you want to use,
+            either physical or normalized.
+            
+    Outputs:
+        bin_centers (array):
+            Returns an array of bin center radii
+        
+        median_sfr (NumpyArray):
+            The median star formation rate surface density per bin
+            
+        mean_sfr (NumpyArray):
+            The mean star formation rate surface density per bin
+            
+        std_sfr (NumpyArray):
+            The standard deviation per bin.
+            
+        n_spaxels (NumpyArray):
+            The number of spaxels per bin.
+    """
+    
+    bin_centers = (radial_bins[:-1] + radial_bins[1:]) / 2
+    
+    median_sfr = []
+    mean_sfr = []
+    std_sfr = []
+    n_spaxels = []
+    
+    for i in range(len(radial_bins) - 1):
+        r_min = radial_bins[i]
+        r_max = radial_bins[i + 1]
+        
+        # Select spaxels in this radial bin
+        in_bin = data[(data[radius_type] >= r_min) & (data[radius_type] < r_max)]
+        
+        if len(in_bin) > 0:
+            median_sfr.append(in_bin['sigma_SFR'].median())
+            mean_sfr.append(in_bin['sigma_SFR'].mean())
+            std_sfr.append(in_bin['sigma_SFR'].std())
+            n_spaxels.append(len(in_bin))
+        else:
+            median_sfr.append(np.nan)
+            mean_sfr.append(np.nan)
+            std_sfr.append(np.nan)
+            n_spaxels.append(0)  
+            
+    return bin_centers, np.array(median_sfr), np.array(mean_sfr), np.array(std_sfr), np.array(n_spaxels)
+
+# Now, I am filtering down to the data I want:
+composite_data = clean_data[clean_data['galaxy_classification'] == 'Composite']
+sf_data = clean_data[clean_data['galaxy_classification'] == 'Star Forming']
+
+##----------------------------------------------------------------
+##            Calculating the SFR Density per Spaxel             -
+##----------------------------------------------------------------
+
+# First calculating radial bins and their centers:
+radial_bins = np.arange(0, 10, 0.5)  # 0 to 10 kpc in 0.5 kpc bins
+bin_centers = (radial_bins[:-1] + radial_bins[1:]) / 2
+
+# Now I will bin both star forming and composite galaxies:
+
+comp_bins, comp_median, comp_mean, comp_std, comp_n = bin_by_radius(composite_data, radial_bins)
+sf_bins, sf_median, sf_mean, sf_std, sf_n = bin_by_radius(sf_data, radial_bins)
+
+# Now creating the plot:
+
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
+
+# Craeting the top panel to be the radial profiles:Top Panel:
+
+# Plot composite galaxies
+ax1.plot(comp_bins, comp_median, 
+         marker='o', linewidth=2, markersize=8,
+         label=f'Composite (n={composite_data["plateifu"].nunique()} galaxies)',
+         color='orange', alpha=0.8)
+
+# Add shaded region for standard deviation
+ax1.fill_between(comp_bins, 
+                  comp_median - comp_std/np.sqrt(comp_n), 
+                  comp_median + comp_std/np.sqrt(comp_n),
+                  alpha=0.3, color='orange')
+
+# Plot star-forming galaxies
+ax1.plot(sf_bins, sf_median,
+         marker='s', linewidth=2, markersize=8,
+         label=f'Star-forming (n={sf_data["plateifu"].nunique()} galaxies)',
+         color='blue', alpha=0.8)
+
+# Add shaded region
+ax1.fill_between(sf_bins,
+                  sf_median - sf_std/np.sqrt(sf_n),
+                  sf_median + sf_std/np.sqrt(sf_n),
+                  alpha=0.3, color='blue')
+
+ax1.set_ylabel('SFR Surface Density', fontsize=14)
+ax1.set_title('Radial SFR Surface Density Profiles', fontsize=16, fontweight='bold')
+ax1.legend(fontsize=12, loc='best')
+ax1.grid(True, alpha=0.3, linestyle='--')
+ax1.set_yscale('log')  # Log scale often better for SFR surface density
+
+##--- Bottom Panel: Number of Spaxels ---##
+
+ax2.plot(comp_bins, comp_n, marker='o', linewidth=2, 
+         label='Composite', color='orange', alpha=0.8)
+ax2.plot(sf_bins, sf_n, marker='s', linewidth=2,
+         label='Star-forming', color='blue', alpha=0.8)
+
+ax2.set_xlabel('Radius (kpc)', fontsize=14)
+ax2.set_ylabel('Number of Spaxels', fontsize=14)
+ax2.set_title('Sample Size per Radial Bin', fontsize=14)
+ax2.legend(fontsize=12)
+ax2.grid(True, alpha=0.3, linestyle='--')
+
+plt.tight_layout()
+plt.savefig('radial_sfr_profile_composite_vs_sf.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+
+##-------------------------------------------------------------------
+##  Calculating the SFR Density Per Spaxel with Normalized Radii:   -
+##-------------------------------------------------------------------
+
+radial_bins_norm = np.linspace(0, 1, 11)
+
+# Bin the data using normalized radius
+comp_bins_norm, comp_median_norm, comp_mean_norm, comp_std_norm, comp_n_norm = bin_by_radius(
+    composite_data, radial_bins_norm, radius_type ='r_normalized'
+)
+sf_bins_norm, sf_median_norm, sf_mean_norm, sf_std_norm, sf_n_norm = bin_by_radius(
+    sf_data, radial_bins_norm, radius_type = 'r_normalized'
+)
+
+# Create plot
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize = (10, 10), sharex = True)
+
+# Top panel: SFR surface density
+ax1.plot(comp_bins_norm, comp_median_norm, marker='o', linewidth=2, markersize=8,
+         label=f'Composite (n={composite_data["plateifu"].nunique()} galaxies)',
+         color='orange', alpha=0.8)
+
+ax1.fill_between(comp_bins_norm, 
+                  comp_median_norm - comp_std_norm/np.sqrt(comp_n_norm), 
+                  comp_median_norm + comp_std_norm/np.sqrt(comp_n_norm),
+                  alpha=0.3, color='orange')
+
+ax1.plot(sf_bins_norm, sf_median_norm, marker='s', linewidth=2, markersize=8,
+         label=f'Star-forming (n={sf_data["plateifu"].nunique()} galaxies)',
+         color='blue', alpha=0.8)
+ax1.fill_between(sf_bins_norm,
+                  sf_median_norm - sf_std_norm/np.sqrt(sf_n_norm),
+                  sf_median_norm + sf_std_norm/np.sqrt(sf_n_norm),
+                  alpha=0.3, color='blue')
+
+ax1.set_ylabel('SFR Surface Density', fontsize=14)
+ax1.set_title('Radial SFR Surface Density Profiles (Normalized Radius)', 
+              fontsize=16, fontweight='bold')
+ax1.legend(fontsize=12, loc='best')
+ax1.grid(True, alpha=0.3, linestyle='--')
+ax1.set_yscale('log')
+
+# Bottom panel: Number of spaxels
+ax2.plot(comp_bins_norm, comp_n_norm, marker='o', linewidth=2, 
+         label='Composite', color='orange', alpha=0.8)
+ax2.plot(sf_bins_norm, sf_n_norm, marker='s', linewidth=2,
+         label='Star-forming', color='blue', alpha=0.8)
+
+ax2.set_xlabel('Normalized Radius', fontsize=14)
+ax2.set_ylabel('Number of Spaxels', fontsize=14)
+ax2.set_title('Sample Size per Radial Bin', fontsize=14)
+ax2.legend(fontsize=12)
+ax2.grid(True, alpha=0.3, linestyle='--')
+
+plt.tight_layout()
+plt.savefig('radial_sfr_profile_normalized.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+
+##---------------------------------------------------------------
+##                Plotting BPT Diagram By Radius:               -
+##---------------------------------------------------------------
+
+
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+# Kauffmann and Kewley lines
+x_line = np.linspace(-2.0, 0.5, 1000)
+kauffmann_y = 0.61 / (x_line - 0.05) + 1.3
+kewley_y = 0.61 / (x_line - 0.47) + 1.19
+
+for ax, data, title in zip(axes, 
+                            [composite_data, sf_data],
+                            ['Composite Galaxies', 'Star-Forming Galaxies']):
+    
+    # Plot spaxels colored by radius
+    scatter = ax.scatter(data['log_nii_halpha'], 
+                         data['log_oiii_hbeta'],
+                         c=data['r_kpc'],  # Color by radius
+                         cmap='viridis',
+                         alpha=0.5,
+                         s=20,
+                         vmin=0, vmax=8)
+    
+    # Plot division lines
+    mask = (x_line > -1.5) & (x_line < 0.05)
+    ax.plot(x_line[mask], kauffmann_y[mask], 'k--', linewidth=2, 
+            label='Kauffmann (2003)')
+    
+    mask = (x_line > -0.3) & (x_line < 0.47)
+    ax.plot(x_line[mask], kewley_y[mask], 'k-', linewidth=2,
+            label='Kewley (2001)')
+    
+    ax.set_xlabel('log([NII]/Hα)', fontsize=14)
+    ax.set_ylabel('log([OIII]/Hβ)', fontsize=14)
+    ax.set_title(title, fontsize=16, fontweight='bold')
+    ax.set_xlim(-1.5, 0.5)
+    ax.set_ylim(-1.0, 1.5)
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
+    
+    # Add colorbar
+    cbar = plt.colorbar(scatter, ax=ax)
+    cbar.set_label('Radius (kpc)', fontsize=12)
+
+plt.tight_layout()
+plt.savefig('bpt_diagram_by_radius.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+##---------------------------------------------------------------
+##            Plot: Total SFR Distribution                      -
+##---------------------------------------------------------------
+
+# Calculate total SFR per galaxy
+comp_total_sfr = composite_data.groupby('plateifu')['SFR'].sum()
+sf_total_sfr = sf_data.groupby('plateifu')['SFR'].sum()
+
+fig, ax = plt.subplots(figsize=(10, 7))
+
+# Histograms
+ax.hist(np.log10(comp_total_sfr), bins=15, alpha=0.6, 
+        label=f'Composite (n={len(comp_total_sfr)})', 
+        color='orange', edgecolor='black')
+ax.hist(np.log10(sf_total_sfr), bins=15, alpha=0.6,
+        label=f'Star-Forming (n={len(sf_total_sfr)})',
+        color='blue', edgecolor='black')
+
+# Add median lines
+ax.axvline(np.log10(comp_total_sfr.median()), 
+           color='orange', linestyle='--', linewidth=2,
+           label=f'Comp Median: {comp_total_sfr.median():.2f} M☉/yr')
+ax.axvline(np.log10(sf_total_sfr.median()),
+           color='blue', linestyle='--', linewidth=2,
+           label=f'SF Median: {sf_total_sfr.median():.2f} M☉/yr')
+
+ax.set_xlabel('log(Total SFR) [Change in Mass / Year]', fontsize=14)
+ax.set_ylabel('Number of Galaxies', fontsize=14)
+ax.set_title('Distribution of Total SFR', fontsize=16, fontweight='bold')
+ax.legend(fontsize=11)
+ax.grid(True, alpha=0.3, axis='y')
+
+plt.tight_layout()
+plt.savefig('total_sfr_distribution.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# Statistical test
+from scipy.stats import mannwhitneyu
+stat, pval = mannwhitneyu(comp_total_sfr, sf_total_sfr)
+print(f"\nMann-Whitney U test:")
+print(f"  p-value: {pval:.4f}")
+if pval < 0.05:
+    print(f"  → Distributions are significantly different!")
+else:
+    print(f"  → No significant difference")
+
+
+
+##---------------------------------------------------------------
+##            Plot: SFR vs Galaxy Size                          -
+##---------------------------------------------------------------
+
+# Calculate per-galaxy stats
+galaxy_stats = clean_data.groupby('plateifu').agg({
+    'SFR': 'sum',
+    'r_kpc': 'max',
+    'galaxy_classification': 'first'
+})
+
+comp_gals = galaxy_stats[galaxy_stats['galaxy_classification'] == 'Composite']
+sf_gals = galaxy_stats[galaxy_stats['galaxy_classification'] == 'Star Forming']
+
+fig, ax = plt.subplots(figsize=(10, 7))
+
+ax.scatter(comp_gals['r_kpc'], comp_gals['SFR'],
+           s=100, alpha=0.7, color='orange', 
+           edgecolors='black', linewidths=0.5,
+           label=f'Composite (n={len(comp_gals)})')
+
+ax.scatter(sf_gals['r_kpc'], sf_gals['SFR'],
+           s=100, alpha=0.7, color='blue',
+           edgecolors='black', linewidths=0.5,
+           label=f'Star-Forming (n={len(sf_gals)})')
+
+ax.set_xlabel('Maximum Radius (kpc)', fontsize=14)
+ax.set_ylabel('Total SFR (Change of Mass / Year)', fontsize=14)
+ax.set_title('SFR vs Galaxy Size', fontsize=16, fontweight='bold')
+ax.set_xscale('log')
+ax.set_yscale('log')
+ax.legend(fontsize=12)
+ax.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('sfr_vs_size.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+
+
+
+
+
+
+
+
+
 
 
 ##---------------------------------------------------------------
@@ -592,3 +1033,4 @@ ax.set_xscale("log")
 ax.set_yscale("log")
 
 plt.show()
+
